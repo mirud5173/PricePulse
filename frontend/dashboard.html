@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Dashboard - PricePulse</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+  <div class="dashboard-container">
+    <header>
+        <h1><span class="brand">📈 PricePulse</span> Dashboard</h1>
+        <button onclick="logout()">Logout</button>
+    </header>
+
+
+    <section class="form-section">
+      <form id="add-form">
+        <input type="url" id="url" placeholder="Amazon product URL" required />
+        <button type="submit">Add Product</button>
+      </form>
+    </section>
+
+    <section id="products" class="product-grid">
+      <p id="loading">Loading your tracked products...</p>
+    </section>
+  </div>
+
+<script>
+const token = localStorage.getItem("token");
+if (!token) window.location.href = "/static/login.html";
+
+const charts = {};
+const historyMap = {};
+const intervals = {};
+let trackedUrls = [];  // 👈 Store tracked URLs here
+
+function toIST(iso) {
+  const date = new Date(iso);
+  return date.toLocaleString("en-IN", {
+    timeZone: "Asia/Kolkata",
+    hour12: true,
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit"
+  });
+}
+
+async function fetchProducts() {
+  const container = document.getElementById("products");
+  container.innerHTML = '<p id="loading">Loading your tracked products...</p>';
+
+  try {
+    const res = await fetch("/my_products", {
+      headers: { Authorization: "Bearer " + token }
+    });
+
+    if (res.status === 401) return logout();
+    if (!res.ok) throw new Error("Failed to fetch products.");
+
+    const products = await res.json();
+    container.innerHTML = "";
+    trackedUrls = products.map(p => p.url.trim().toLowerCase());  // 👈 Update trackedUrls
+
+    if (products.length === 0) {
+      container.innerHTML = "<p>No products tracked yet. Add one above!</p>";
+      return;
+    }
+
+    for (let product of products) {
+      const card = document.createElement("div");
+      card.className = "product-card";
+      card.innerHTML = `
+        <img src="${product.image_url || 'https://via.placeholder.com/100'}" />
+        <h3><a href="${product.url}" target="_blank" rel="noopener noreferrer">${product.product_name}</a></h3>
+        <canvas id="chart-${product.id}" height="150"></canvas>
+        <div style="margin-top: 10px;">
+          <input type="number" id="target-price-${product.id}" placeholder="Target price ₹" style="width: 120px;" />
+          <button onclick="setAlert(${product.id})">Set Alert</button>
+        </div>
+        <button onclick="deleteProduct(${product.id})" class="delete-btn">❌ Delete</button>
+      `;
+      container.appendChild(card);
+
+      const histRes = await fetch(`/history/${product.id}`, {
+        headers: { Authorization: "Bearer " + token }
+      });
+
+      if (histRes.status === 401) return logout();
+      const history = await histRes.json();
+      historyMap[product.id] = history;
+
+      const ctx = document.getElementById(`chart-${product.id}`).getContext("2d");
+      charts[product.id] = new Chart(ctx, {
+        type: "line",
+        data: {
+          labels: history.map(h => toIST(h.timestamp)),
+          datasets: [{
+            label: "₹ Price",
+            data: history.map(h => h.price),
+            borderColor: "#2ecc71",
+            backgroundColor: "rgba(46, 204, 113, 0.2)",
+            tension: 0.3,
+            fill: true
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: {
+            x: { title: { display: true, text: 'Time (IST)' }},
+            y: { title: { display: true, text: 'Price (₹)' }}
+          }
+        }
+      });
+
+      if (!intervals[product.id]) {
+        intervals[product.id] = setInterval(() => updateChart(product.id, product.url), 60000);
+      }
+    }
+  } catch (err) {
+    container.innerHTML = "<p>Failed to load products. Please try again later.</p>";
+    console.error("Error fetching products:", err);
+  }
+}
+
+async function updateChart(productId, url) {
+  try {
+    const res = await fetch("/scrape", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer " + token
+      },
+      body: JSON.stringify({ url, product_id: productId })
+    });
+
+    if (res.status === 401) return logout();
+    const data = await res.json();
+    if (!data.price) return;
+
+    const price = parseFloat(data.price.toString().replace(/[^\d.]/g, ''));
+    const now = new Date().toISOString();
+
+    const chart = charts[productId];
+    const history = historyMap[productId];
+
+    history.push({ timestamp: now, price });
+    chart.data.labels.push(toIST(now));
+    chart.data.datasets[0].data.push(price);
+    chart.update();
+  } catch (err) {
+    console.error(`Failed to update chart for product ${productId}:`, err);
+  }
+}
+
+async function setAlert(productId) {
+  const priceInput = document.getElementById(`target-price-${productId}`);
+  const targetPrice = parseFloat(priceInput.value);
+  if (!targetPrice || targetPrice <= 0) {
+    alert("Enter a valid target price.");
+    return;
+  }
+
+  try {
+    const res = await fetch("/alerts", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer " + token
+      },
+      body: JSON.stringify({
+        product_id: productId,
+        target_price: targetPrice
+      })
+    });
+
+    if (res.status === 401) return logout();
+    const result = await res.json();
+    alert(result.message || "Alert set!");
+    priceInput.value = "";
+  } catch (err) {
+    alert("Failed to set alert.");
+    console.error(err);
+  }
+}
+
+document.getElementById("add-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const url = document.getElementById("url").value.trim();
+
+  if (!url) return alert("Please enter a valid URL.");
+  if (trackedUrls.includes(url.toLowerCase())) {
+    return alert("You're already tracking this product.");
+  }
+
+  try {
+    const res = await fetch("/add_product", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer " + token
+      },
+      body: JSON.stringify({ url })
+    });
+
+    if (res.status === 401) return logout();
+
+    if (res.ok) {
+      fetchProducts();
+      e.target.reset();
+    } else {
+      const error = await res.json();
+      alert(error.detail || "Failed to add product.");
+    }
+  } catch (err) {
+    alert("Network error. Please try again later.");
+  }
+});
+
+async function deleteProduct(id) {
+  if (!confirm("Are you sure you want to delete this product?")) return;
+
+  try {
+    const res = await fetch(`/delete_product/${id}`, {
+      method: "DELETE",
+      headers: { Authorization: "Bearer " + token }
+    });
+
+    if (res.status === 401) return logout();
+
+    if (res.ok) {
+      fetchProducts();
+    } else {
+      const err = await res.json();
+      alert(err.detail || "Failed to delete product.");
+    }
+  } catch (err) {
+    alert("Network error. Please try again later.");
+  }
+}
+
+function logout() {
+  localStorage.removeItem("token");
+  window.location.href = "/static/login.html";
+}
+
+fetchProducts();
+</script>
+<!-- IBM Watson Assistant Chatbot Embed -->
+<script>
+  window.watsonAssistantChatOptions = {
+    integrationID: "9785e7c3-e2f7-4931-97e6-6c31d7dfaafc", // The ID of this integration.
+    region: "us-south", // The region your integration is hosted in.
+    serviceInstanceID: "5ff132d1-e5c6-4ca6-8ef8-339012fdd96e", // The ID of your service instance.
+    onLoad: async (instance) => { await instance.render(); }
+  };
+  setTimeout(function(){
+    const t = document.createElement('script');
+    t.src = "https://web-chat.global.assistant.watson.appdomain.cloud/versions/" + 
+            (window.watsonAssistantChatOptions.clientVersion || 'latest') + 
+            "/WatsonAssistantChatEntry.js";
+    document.head.appendChild(t);
+  });
+</script>
+</body>
+</html>

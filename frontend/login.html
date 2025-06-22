@@ -1,0 +1,73 @@
+<!-- frontend/login.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Login - PricePulse</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet" />
+</head>
+<body class="auth-bg">
+  <div class="auth-container">
+    <div class="auth-card">
+      <h1 id="auth-title">Welcome to <span class="brand">PricePulse</span></h1>
+      <form id="auth-form">
+        <label for="email">Email</label>
+        <input type="email" id="email" placeholder="you@example.com" required />
+
+        <label for="password">Password</label>
+        <input type="password" id="password" placeholder="••••••••" required />
+
+        <button type="submit" id="auth-button">Login</button>
+
+        <p class="toggle-auth">
+          Don't have an account?
+          <a href="#" id="toggleLink">Register here</a>
+        </p>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    let isLogin = true;
+    const form = document.getElementById("auth-form");
+    const toggleLink = document.getElementById("toggleLink");
+    const title = document.getElementById("auth-title");
+    const button = document.getElementById("auth-button");
+
+    toggleLink.addEventListener("click", (e) => {
+      e.preventDefault();
+      isLogin = !isLogin;
+      title.innerHTML = isLogin ? 'Welcome to <span class="brand">PricePulse</span>' : 'Register for <span class="brand">PricePulse</span>';
+      button.textContent = isLogin ? "Login" : "Register";
+      toggleLink.textContent = isLogin ? "Register here" : "Already have an account? Login";
+    });
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const email = document.getElementById("email").value;
+      const password = document.getElementById("password").value;
+
+      const route = isLogin ? "/login" : "/register";
+      const res = await fetch(route, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password })
+      });
+
+      const data = await res.json();
+      if (res.ok) {
+        if (isLogin) {
+          localStorage.setItem("token", data.access_token);
+          window.location.href = "/static/dashboard.html";
+        } else {
+          alert("Registration successful! Please log in.");
+          toggleLink.click();
+        }
+      } else {
+        alert(data.detail || "Authentication failed.");
+      }
+    });
+  </script>
+</body>
+</html>
